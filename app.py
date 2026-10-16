@@ -5,9 +5,9 @@ from cyber_setup import (
     VulnCategory, 
     Vulnerability, 
     AuditLog, 
-    Session, 
+    get_session, 
     setup_cyber_db,
-    DATABASE_URL
+    get_db_type
 )
 
 # Səhifə konfiqurasiyası
@@ -20,7 +20,7 @@ st.set_page_config(
 # Bazanı və cədvəlləri hazır vəziyyətə gətiririk
 setup_cyber_db()
 
-session = Session()
+session = get_session()
 
 st.title("🛡️ Kiberbəhlükəsizlik Zəiflikləri və Audit İdarəetmə Paneli")
 st.markdown("Kiber zəifliklərin qeydiyyatı, CVSS risk təhlili və audit testlərinin monitorinq sistemi.")
@@ -29,8 +29,7 @@ st.sidebar.header("Naviqasiya")
 menu = st.sidebar.radio("Bölməni seçin:", ["📋 Zəifliklər Siyahısı", "➕ Yeni Zəiflik Əlavə Et", "📊 Audit Analitikası"])
 
 # Baza növünü göstərən bildiriş
-db_type = "PostgreSQL" if "postgresql" in str(DATABASE_URL) else "SQLite (Cloud Demo Rejimi)"
-st.sidebar.caption(f"Verilənlər Bazası: **{db_type}**")
+st.sidebar.caption(f"Verilənlər Bazası: **{get_db_type()}**")
 
 if menu == "📋 Zəifliklər Siyahısı":
     st.subheader("📋 Bazadakı Mövcud Zəifliklər")

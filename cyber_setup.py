@@ -1,7 +1,9 @@
 import os
+import tempfile
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy.pool import StaticPool
 from datetime import datetime
 
 load_dotenv()
@@ -22,8 +24,16 @@ if not DATABASE_URL:
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
+# Streamlit Cloud mühitində (məsələn /mount qovluğunda) localhost PostgreSQL işləmir
+is_cloud = os.path.exists("/mount") or os.getenv("STREAMLIT_SERVER_PORT") is not None
+
 def get_engine():
     global DATABASE_URL
+    
+    # Əgər cloud mühitidirsə və ya DATABASE_URL localhost-dursa, birbaşa SQLite-a keç
+    if is_cloud and DATABASE_URL and ("localhost" in DATABASE_URL or "127.0.0.1" in DATABASE_URL):
+        DATABASE_URL = None
+
     if DATABASE_URL:
         try:
             test_engine = create_engine(DATABASE_URL, pool_pre_ping=True)
@@ -31,16 +41,39 @@ def get_engine():
                 pass
             return test_engine
         except Exception:
-            # Əgər göstərilən DATABASE_URL (məs. lokal postgres) əlçatmazdırsa, SQLite-a keçid
             pass
     
-    # Cloud və ya lokal offline nümayiş üçün SQLite bazası
-    DATABASE_URL = "sqlite:///cyber_audit.db"
-    return create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+    # Streamlit Cloud-da /mount qovluğu read-only ola bildiyi üçün bazanı /tmp (tempdir) içində saxlayırıq
+    try:
+        tmp_dir = tempfile.gettempdir()
+        db_path = os.path.join(tmp_dir, "cyber_audit.db")
+        DATABASE_URL = f"sqlite:///{db_path}"
+        return create_engine(
+            DATABASE_URL, 
+            connect_args={"check_same_thread": False}
+        )
+    except Exception:
+        # Ən pis halda in-memory SQLite bazası (hər zaman 100% işləyir)
+        DATABASE_URL = "sqlite:///:memory:"
+        return create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool
+        )
 
 engine = get_engine()
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
+
+def get_session():
+    global Session
+    return Session()
+
+def get_db_type():
+    global DATABASE_URL
+    if DATABASE_URL and "postgresql" in str(DATABASE_URL):
+        return "PostgreSQL"
+    return "SQLite (Cloud Rejimi)"
 
 # 1. Kateqoriyalar cədvəli
 class VulnCategory(Base):
@@ -75,10 +108,23 @@ class AuditLog(Base):
     vulnerability = relationship("Vulnerability", back_populates="audit_logs")
 
 def setup_cyber_db():
-    Base.metadata.create_all(engine)
+    global engine, Session, DATABASE_URL
+    try:
+        Base.metadata.create_all(engine)
+    except Exception:
+        # Hər hansı fayl yazma / icazə xətası olarsa, dərhal in-memory bazaya keçid
+        DATABASE_URL = "sqlite:///:memory:"
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool
+        )
+        Session = sessionmaker(bind=engine)
+        Base.metadata.create_all(engine)
+
     session = Session()
     try:
-        # Əgər baza boşdursa, nümayiş üçün ilkin məlumatları əlavə edirik
+        # Əgər baza boşdursa, nümayiş üçün ilkin nümunə məlumatları əlavə edirik
         if session.query(VulnCategory).count() == 0:
             c_web = VulnCategory(name="Web Security")
             c_crypto = VulnCategory(name="Cryptography")
