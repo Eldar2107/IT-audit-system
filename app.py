@@ -1,84 +1,110 @@
 import streamlit as st
 import pandas as pd
-import os
-from dotenv import load_dotenv
-from sqlalchemy import create_engine, func
-from sqlalchemy.orm import sessionmaker
-from cyber_setup import VulnCategory, Vulnerability, AuditLog, DATABASE_URL
+from sqlalchemy import func
+from cyber_setup import (
+    VulnCategory, 
+    Vulnerability, 
+    AuditLog, 
+    Session, 
+    setup_cyber_db,
+    DATABASE_URL
+)
 
-# Verilənlər bazası bağlantısı
-engine = create_engine(DATABASE_URL)
-Session = sessionmaker(bind=engine)
+# Səhifə konfiqurasiyası
+st.set_page_config(
+    page_title="CyberSecurity Audit Dashboard",
+    page_icon="🛡️",
+    layout="wide"
+)
+
+# Bazanı və cədvəlləri hazır vəziyyətə gətiririk
+setup_cyber_db()
+
 session = Session()
 
 st.title("🛡️ Kiberbəhlükəsizlik Zəiflikləri və Audit İdarəetmə Paneli")
+st.markdown("Kiber zəifliklərin qeydiyyatı, CVSS risk təhlili və audit testlərinin monitorinq sistemi.")
+
 st.sidebar.header("Naviqasiya")
+menu = st.sidebar.radio("Bölməni seçin:", ["📋 Zəifliklər Siyahısı", "➕ Yeni Zəiflik Əlavə Et", "📊 Audit Analitikası"])
 
-# Sidebar menyusu
-menu = st.sidebar.radio("Seçim et:", ["Zəifliklər", "Yeni Zəiflik Əlavə Et", "Audit Logları və Analitika"])
+# Baza növünü göstərən bildiriş
+db_type = "PostgreSQL" if "postgresql" in str(DATABASE_URL) else "SQLite (Cloud Demo Rejimi)"
+st.sidebar.caption(f"Verilənlər Bazası: **{db_type}**")
 
-if menu == "Zəifliklər":
+if menu == "📋 Zəifliklər Siyahısı":
     st.subheader("📋 Bazadakı Mövcud Zəifliklər")
     
-    # Bazadan məlumatları çəkirik
     vulns = session.query(Vulnerability).all()
     data = []
     for v in vulns:
+        # Risk dərəcəsi təyini
+        risk_level = "Kritik 🔴" if v.cvss_score >= 9.0 else ("Yüksək 🟠" if v.cvss_score >= 7.0 else "Orta 🟡")
         data.append({
             "ID": v.id,
             "Başlıq": v.title,
-            "CVSS Ballı": v.cvss_score,
+            "CVSS Balı": v.cvss_score,
+            "Risk Dərəcəsi": risk_level,
             "Kateqoriya": v.category.name if v.category else "Digər"
         })
     
-    df = pd.DataFrame(data)
-    st.dataframe(df, use_container_width=True)
+    if data:
+        df = pd.DataFrame(data)
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("Hələ ki heç bir zəiflik qeydə alınmayıb.")
 
-elif menu == "Yeni Zəiflik Əlavə Et":
+elif menu == "➕ Yeni Zəiflik Əlavə Et":
     st.subheader("➕ Yeni Zəiflik Qeydiyyatı")
     
-    with st.form("vuln_form"):
-        title = st.text_input("Zəiflik Başlığı (Məsələn: XSS Vulnerability)")
-        cvss = st.number_input("CVSS Təhlükə Ballı", min_value=0.0, max_value=10.0, value=5.0)
-        
-        # Kateqoriyaları seçmək üçün bazadan çəkirik
-        categories = session.query(VulnCategory).all()
-        cat_dict = {c.name: c.id for c in categories}
-        selected_cat_name = st.selectbox("Kateqoriya", list(cat_dict.keys()))
+    categories = session.query(VulnCategory).all()
+    cat_dict = {c.name: c.id for c in categories}
+    
+    with st.form("vuln_form", clear_on_submit=True):
+        title = st.text_input("Zəiflik Başlığı (Məsələn: Broken Access Control)")
+        cvss = st.slider("CVSS Təhlükə Balı", min_value=0.0, max_value=10.0, value=5.0, step=0.1)
+        selected_cat_name = st.selectbox("Kateqoriya", list(cat_dict.keys()) if cat_dict else ["Ümumi"])
         
         submitted = st.form_submit_button("Bazaya Əlavə Et")
         
-        if submitted and title:
-            new_vuln = Vulnerability(
-                title=title, 
-                cvss_score=cvss, 
-                category_id=cat_dict[selected_cat_name]
-            )
-            session.add(new_vuln)
-            session.commit()
-            st.success(f"'{title}' uğurla əlavə olundu! 🎉")
+        if submitted:
+            if not title.strip():
+                st.error("Zəhmət olmasa zəiflik başlığını qeyd edin!")
+            else:
+                cat_id = cat_dict.get(selected_cat_name)
+                new_vuln = Vulnerability(
+                    title=title.strip(), 
+                    cvss_score=cvss, 
+                    category_id=cat_id
+                )
+                session.add(new_vuln)
+                session.commit()
+                st.success(f"'{title}' uğurla əlavə olundu! 🎉")
+                st.rerun()
 
-elif menu == "Audit Logları və Analitika":
-    st.subheader("📊 Audit Hesabatları və Test Sayları")
+elif menu == "📊 Audit Analitikası":
+    st.subheader("📊 Audit Hesabatları və Təhlükəsizlik Statistikası")
     
     total_tests = session.query(func.sum(AuditLog.tested_count)).scalar() or 0
     avg_cvss = session.query(func.avg(Vulnerability.cvss_score)).scalar() or 0
+    total_vulns = session.query(Vulnerability).count()
     
-    col1, col2 = st.columns(2)
-    col1.metric("Ümumi Test Sayı", total_tests)
-    col2.metric("Orta CVSS Ballı", round(avg_cvss, 2))
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Ümumi Zəiflik Sayı", total_vulns)
+    col2.metric("Ümumi Audit Test Sayı", total_tests)
+    col3.metric("Orta CVSS Balı", round(avg_cvss, 2))
     
     st.markdown("---")
-    st.subheader("📜 Aparılan Auditlərin Siyahısı")
+    st.subheader("📜 Aparılan Audit Testlərinin Tarixçəsi")
     
     logs = session.query(AuditLog).all()
     log_data = []
     for l in logs:
         log_data.append({
             "Log ID": l.id,
-            "Zəiflik": l.vulnerability.title,
+            "Zəiflik": l.vulnerability.title if l.vulnerability else "Bilinmir",
             "Test Sayı": l.tested_count,
-            "Tarix": l.scanned_at
+            "Tarix": l.scanned_at.strftime("%Y-%m-%d %H:%M") if l.scanned_at else "—"
         })
     
     if log_data:
